@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 /// A simple example demonstrating how to handle user input.
 ///
 /// This is a bit out of the scope of
@@ -27,14 +29,30 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
+use tokio::time::sleep;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
+    let app = App::new();
+
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(10)).await;
+        // app.messages.push("value".to_string());
+    });
+
     color_eyre::install()?;
-    ratatui::run(|terminal| App::new().run(terminal))
+    ratatui::run(|terminal| app.run(terminal))
+}
+
+struct Shields {
+    drain: i8,
+    power: i8,
+    active: bool
 }
 
 struct System {
-    weapons: i8
+    weapons: i8,
+    shields: Shields,
 }
 
 struct Player {
@@ -69,7 +87,7 @@ struct App {
 impl App {
     const fn new() -> Self {
         Self {
-            player: Player { hall: 100, power: 100, system: System { weapons: 0 } },
+            player: Player { hall: 100, power: 100, system: System { weapons: 0, shields: Shields { drain: 10, power: 10, active: false } } },
             input: String::new(),
             messages: Vec::new(),
             character_index: 0,
@@ -140,10 +158,17 @@ impl App {
 
         match (first_command, end_command) {
             (Some(first), Some(seconed)) => {
-                if first == "power" && seconed.parse::<i8>().is_ok() {
-                    let n: i8 = seconed.trim().parse().unwrap();
-                    self.player.move_power(n);
+                self.messages.push(first.to_string());
+                self.messages.push(seconed.to_string());
+                if first == "shields" && seconed == "up" {
+                    self.messages.push(self.player.system.shields.active.to_string());
+                    self.player.system.shields.active = true;
+                    self.messages.push(self.player.system.shields.active.to_string());
                 }
+                // if first == "shields" && seconed == "up" {
+                //     self.player.system.shields.active = false;
+                // }
+
             },
             _ => {}
         }
@@ -155,7 +180,16 @@ impl App {
 
     fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         loop {
+
             terminal.draw(|frame| self.render(frame))?;
+
+            if crossterm::event::poll(Duration::from_millis(1))? {
+                self.messages.push("time".to_string());
+                if self.player.system.shields.active {
+                    self.player.power = self.player.power - self.player.system.shields.drain;
+                }
+            }
+
 
             if let Some(key) = event::read()?.as_key_press_event() {
                 if key.kind == KeyEventKind::Press {
