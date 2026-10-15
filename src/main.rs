@@ -23,25 +23,22 @@ use std::time::Duration;
 ///
 /// [`latest`]: https://github.com/ratatui/ratatui/tree/latest
 use color_eyre::Result;
-use crossterm::event::{self, KeyCode, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use futures_util::StreamExt;
 use ratatui::layout::{Constraint, Layout, Position};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use tokio::time::sleep;
+use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let app = App::new();
-
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(10)).await;
-        // app.messages.push("value".to_string());
-    });
-
     color_eyre::install()?;
-    ratatui::run(|terminal| app.run(terminal))
+    let mut terminal = ratatui::init();
+    let result = App::new().run(&mut terminal).await;
+    ratatui::restore();
+    result
 }
 
 struct Shields {
@@ -59,18 +56,6 @@ struct Player {
     hall: i8,
     power: i8,
     system: System
-}
-
-impl Player {
-    fn move_power(&mut self, amount: i8) {
-        if amount > self.power {
-            println!("error");
-            return;
-        }
-
-        self.system.weapons = amount;
-        self.power -= amount
-    }
 }
 
 /// App holds the state of the application
@@ -160,11 +145,8 @@ impl App {
             (Some(first), Some(seconed)) => {
                 self.messages.push(first.to_string());
                 self.messages.push(seconed.to_string());
-                if first == "shields" && seconed == "up" {
-                    self.messages.push(self.player.system.shields.active.to_string());
-                    self.player.system.shields.active = true;
-                    self.messages.push(self.player.system.shields.active.to_string());
-                }
+                if first == "shields" && seconed == "up" { self.player.system.shields.active = true; }
+                if first == "shields" && seconed == "down" { self.player.system.shields.active = false; }
                 // if first == "shields" && seconed == "up" {
                 //     self.player.system.shields.active = false;
                 // }
@@ -178,29 +160,49 @@ impl App {
         self.reset_cursor();
     }
 
-    fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        loop {
+    async fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut events = EventStream::new();
+        let tick_period = Duration::from_secs(1);
+        let mut ticks = interval_at(Instant::now() + tick_period, tick_period);
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+
+        loop {
             terminal.draw(|frame| self.render(frame))?;
 
-            if crossterm::event::poll(Duration::from_millis(1))? {
-                self.messages.push("time".to_string());
-                if self.player.system.shields.active {
-                    self.player.power = self.player.power - self.player.system.shields.drain;
+            tokio::select! {
+                _ = ticks.tick() => {
+                    if self.player.system.shields.active {
+                        self.player.power = self.player.power
+                            .saturating_sub(self.player.system.shields.drain)
+                            .max(0);
+                    }
+
+                    if !self.player.system.shields.active {
+                        self.player.power = self.player.power
+                            .saturating_add(10)
+                            .min(100)
+                    }
                 }
-            }
 
-
-            if let Some(key) = event::read()?.as_key_press_event() {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Enter => self.submit_message(),
-                        KeyCode::Char(to_insert) => self.enter_char(to_insert),
-                        KeyCode::Backspace => self.delete_char(),
-                        KeyCode::Left => self.move_cursor_left(),
-                        KeyCode::Right => self.move_cursor_right(),
-                        KeyCode::Esc => return Ok(()),
-                        _ => {}
+                event = events.next() => {
+                    let Some(event) = event else {
+                        return Ok(());
+                    };
+                    match event? {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            match key.code {
+                                KeyCode::Enter => self.submit_message(),
+                                KeyCode::Char(to_insert) => self.enter_char(to_insert),
+                                KeyCode::Backspace => self.delete_char(),
+                                KeyCode::Left => self.move_cursor_left(),
+                                KeyCode::Right => self.move_cursor_right(),
+                                KeyCode::Esc => return Ok(()),
+                                _ => {}
+                            }
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => continue,
                     }
                 }
             }
